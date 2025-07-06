@@ -108,17 +108,17 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     fn next(&mut self) -> Result<()> {
         let current_iterator = self.current.as_mut().unwrap();
         // Move to the next position in the top iterator available on the heap if they hold the same key as current iterator.
-        while let Some(mut heap_top_iterator) = self.iters.peek_mut() {
-            if heap_top_iterator.1.key() == current_iterator.1.key() {
+        while let Some(mut other_iterator) = self.iters.peek_mut() {
+            if other_iterator.1.key() == current_iterator.1.key() {
                 // Move to the next position in the top iterator.
-                if let e @ Err(_) = heap_top_iterator.1.next() {
-                    PeekMut::pop(heap_top_iterator);
+                if let e @ Err(_) = other_iterator.1.next() {
+                    PeekMut::pop(other_iterator);
                     return e;
                 }
 
                 // Reached the end of the iterator, remove it from the heap.
-                if !heap_top_iterator.1.is_valid() {
-                    PeekMut::pop(heap_top_iterator);
+                if !other_iterator.1.is_valid() {
+                    PeekMut::pop(other_iterator);
                 }
             } else {
                 break;
@@ -138,9 +138,9 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         }
         // All the iterators will now have non-colliding keys and the top iterator or the current iterator has the smallest key.
         // Swap the current iterator with the top iterator in the heap if it is smaller.
-        if let Some(mut inner_iter) = self.iters.peek_mut() {
-            if *current_iterator < *inner_iter {
-                std::mem::swap(&mut *inner_iter, current_iterator);
+        if let Some(mut other_iterator) = self.iters.peek_mut() {
+            if *current_iterator < *other_iterator {
+                std::mem::swap(&mut *other_iterator, current_iterator);
             }
         }
         Ok(())

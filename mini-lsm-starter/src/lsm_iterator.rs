@@ -31,7 +31,17 @@ pub struct LsmIterator {
 
 impl LsmIterator {
     pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        Ok(Self { inner: iter })
+        let mut iter = Self { inner: iter };
+        iter.move_to_valid_key()?;
+        Ok(iter)
+    }
+
+    fn move_to_valid_key(&mut self) -> Result<()> {
+        // If this is a tombstone, we keep moving forward until we find a valid value.
+        while self.is_valid() && self.inner.value().is_empty() {
+            self.inner.next()?;
+        }
+        Ok(())
     }
 }
 
@@ -52,12 +62,7 @@ impl StorageIterator for LsmIterator {
 
     fn next(&mut self) -> Result<()> {
         self.inner.next()?;
-
-        // If this is a tombstone, we keep moving forward until we find a valid value.
-        while self.is_valid() && self.inner.value().is_empty() {
-            self.inner.next()?;
-        }
-
+        self.move_to_valid_key()?;
         Ok(())
     }
 }
