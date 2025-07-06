@@ -30,6 +30,7 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::merge_iterator::MergeIterator;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
@@ -427,7 +428,22 @@ impl LsmStorageInner {
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        unimplemented!()
+        // Take a snapshot of the current state for the iterator to be created from.
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
+
+        let mut memtable_iters = Vec::new();
+
+        memtable_iters.push(Box::new(snapshot.memtable.scan(_lower, _upper)));
+        // Add from latest to earliest as the tie-breaker is based on the index based on order of insertion.
+        for imm_memtable in snapshot.imm_memtables.iter() {
+            memtable_iters.push(Box::new(imm_memtable.scan(_lower, _upper)));
+        }
+
+        let iter = MergeIterator::create(memtable_iters);
+        Ok(FusedIterator::new(LsmIterator::new(iter)?))
     }
 
     fn try_freeze(&self, size: usize) -> Result<()> {

@@ -39,19 +39,26 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.inner.is_valid()
     }
 
     fn key(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.key().into_inner()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.value()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        self.inner.next()?;
+
+        // If this is a tombstone, we keep moving forward until we find a valid value.
+        while self.is_valid() && self.inner.value().is_empty() {
+            self.inner.next()?;
+        }
+
+        Ok(())
     }
 }
 
@@ -79,18 +86,36 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
         Self: 'a;
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        if self.has_errored {
+            return false;
+        }
+        self.iter.is_valid()
     }
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        if self.has_errored || !self.iter.is_valid() {
+            panic!("Cannot call key() on an invalid iterator");
+        }
+        self.iter.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        if self.has_errored || !self.iter.is_valid() {
+            panic!("Cannot call value() on an invalid iterator");
+        }
+        self.iter.value()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if self.has_errored {
+            return Err(anyhow::anyhow!("Cannot call next() on an invalid iterator"));
+        }
+
+        if let Err(e) = self.iter.next() {
+            self.has_errored = true;
+            return Err(e);
+        }
+
+        Ok(())
     }
 }
