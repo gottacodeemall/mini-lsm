@@ -298,8 +298,12 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
-        let state = self.state.read();
-        let memtable = &state.memtable;
+        assert!(!_key.is_empty(), "key cannot be empty");
+
+        let guard = self.state.read();
+        let snapshot = &guard;
+
+        let memtable = &snapshot.memtable;
         // Check the memtable first
         if let Some(value) = memtable.get(_key) {
             if value.is_empty() {
@@ -309,7 +313,7 @@ impl LsmStorageInner {
             return Ok(Some(value));
         }
         // If not found in memtable, check the immutable memtables
-        for imm_memtable in state.imm_memtables.iter() {
+        for imm_memtable in snapshot.imm_memtables.iter() {
             if let Some(value) = imm_memtable.get(_key) {
                 if value.is_empty() {
                     // Empty value is a tombstone (deletion marker)
@@ -328,30 +332,35 @@ impl LsmStorageInner {
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        // Memtable is implemented using lock-free skipmap, so we can use a read lock here.
-        let lsm_state_read = self.state.read();
-        if lsm_state_read.memtable.approximate_size() + _value.len() + _key.len()
-            > self.options.target_sst_size
+        assert!(!_value.is_empty(), "value cannot be empty");
+        assert!(!_key.is_empty(), "key cannot be empty");
+
+        let size;
         {
-            // Drop the read lock before freezing as freezing the memtable requires exclusive access
-            // Alternate: Take an upgradeable read lock, pass it to `force_freeze_memtable`
-            // and then upgrade it to a write lock.
-            drop(lsm_state_read);
-            // If the memtable is too large, we need to freeze it and flush it to L0.
-            self.force_freeze_memtable(&self.state_lock.lock())?;
-            // Re-read the state to get the new memtable
-            let lsm_state_read = self.state.read();
-            let memtable = &lsm_state_read.memtable;
-            memtable.put(_key, _value)
-        } else {
-            let memtable = &lsm_state_read.memtable;
-            memtable.put(_key, _value)
+            // Memtable is implemented using lock-free skipmap, so we can use a read lock here.
+            let guard = self.state.read();
+            guard.memtable.put(_key, _value)?;
+            size = guard.memtable.approximate_size();
         }
+
+        self.try_freeze(size)?;
+        Ok(())
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        self.put(_key, b"")
+        assert!(!_key.is_empty(), "key cannot be empty");
+
+        let size;
+        {
+            let guard = self.state.read();
+            guard.memtable.put(_key, b"")?;
+            size = guard.memtable.approximate_size();
+        }
+
+        self.try_freeze(size)?;
+
+        Ok(())
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -376,25 +385,29 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        // No one else should be writing to the state while we are freezing the memtable.
-        let mut lsm_state_write = self.state.write();
-        let current_state = lsm_state_write.clone();
+        // Try to do as much work as possible while holding the read lock.
+        // 1. Create a fresh memtable.
+        let memtable_id = self.next_sst_id();
+        let memtable = Arc::new(MemTable::create(memtable_id));
 
-        // Create new immutable memtables list with the current memtable added
-        let mut new_imm_memtables = current_state.imm_memtables.clone();
-        new_imm_memtables.insert(0, current_state.memtable.clone());
+        let old_memtable;
 
-        // Create new state with the new memtable and updated immutable memtables
-        let new_state = LsmStorageState {
-            memtable: Arc::new(MemTable::create(self.next_sst_id())),
-            imm_memtables: new_imm_memtables,
-            l0_sstables: current_state.l0_sstables.clone(),
-            levels: current_state.levels.clone(),
-            sstables: current_state.sstables.clone(),
-        };
+        {
+            // Acquire a write lock on the LsmStorageState.
+            let mut guard = self.state.write();
 
-        // Replace the entire state
-        *lsm_state_write = Arc::new(new_state);
+            // Take a mutable reference to a CLONED value of the current LSMState.
+            // Why Arc<T> only provides a shared reference, pattern: clone, take ownership and update Arc<T>
+            let mut snapshot = guard.as_ref().clone();
+
+            // Update the current memtable with the new memtable
+            old_memtable = std::mem::replace(&mut snapshot.memtable, memtable);
+            snapshot.imm_memtables.insert(0, old_memtable.clone());
+
+            // Update the state with the new snapshot
+            *guard = Arc::new(snapshot);
+        }
+
         Ok(())
     }
 
@@ -415,5 +428,23 @@ impl LsmStorageInner {
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
         unimplemented!()
+    }
+
+    fn try_freeze(&self, size: usize) -> Result<()> {
+        if size > self.options.target_sst_size {
+            {
+                let state_lock = self.state_lock.lock();
+                {
+                    // Recheck the conditions again after acquiring the lock, maybe another threads has already completed this operation.
+                    let state = self.state.read();
+                    if state.memtable.approximate_size() <= self.options.target_sst_size {
+                        return Ok(());
+                    }
+                }
+
+                self.force_freeze_memtable(&state_lock)?;
+            }
+        }
+        Ok(())
     }
 }
