@@ -1,8 +1,8 @@
 ## Week 1
-### Task 1
+### Day 1
 Understanding about fairness in locks
 -  If there are readers which have taken a read lock, and new set of readers keep coming in, the readers will keep the lock to themselves starving any writers waiting for the read lock to be released.
-    - Parking Lot locks don't ensure fairness
+    - Parking Lot locks ensures fairness [ref](https://amanieu.github.io/parking_lot/parking_lot/struct.RwLock.html)
 - How are fairness based locks implemented:
     1. Ticket based System - Queueing and tokening
     2. Alternating - Alternate between readers and writers
