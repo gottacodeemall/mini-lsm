@@ -16,7 +16,10 @@ use std::sync::Arc;
 
 use bytes::Buf;
 
-use crate::{block::SIZEOF_U16, key::{KeySlice, KeyVec}};
+use crate::{
+    block::SIZEOF_U16,
+    key::{KeySlice, KeyVec},
+};
 
 use super::Block;
 
@@ -37,7 +40,6 @@ pub struct BlockIterator {
 impl Block {
     fn get_first_key(&self) -> KeyVec {
         let mut buf = &self.data[..];
-        buf.get_u16();
         let key_len = buf.get_u16();
         let key = &buf[..key_len as usize];
         KeyVec::from_vec(key.to_vec())
@@ -101,7 +103,8 @@ impl BlockIterator {
     pub fn seek_to_key(&mut self, key: KeySlice) {
         let mut low = 0;
         let mut high = self.block.offsets.len();
-        while low < high { // Binary search for the key
+        while low < high {
+            // Binary search for the key
             let mid = low + (high - low) / 2;
             self.seek_to(mid);
             assert!(self.is_valid());
@@ -135,7 +138,7 @@ impl BlockIterator {
 
         // 1. Get the data pointing from the correct offset.
         let mut block_data = &self.block.data[offset..];
-        
+
         // 2. Update the key.
         let key_len = block_data.get_u16() as usize; // Key Length -  Auto Advance ptr in block data
         let key = &block_data[..key_len];
